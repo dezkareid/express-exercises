@@ -7,6 +7,8 @@ const User = require('./models/User')
 const app = express()
 const port = 3000
 
+const tokenSet = new Set()
+
 mongoose.connect('mongodb://localhost/sample', { useNewUrlParser: true })
 
 app.use(express.json())
@@ -29,9 +31,19 @@ app.post('/auth', (req, res) => {
     })
     .then(function (isEqual) {
       if (isEqual) {
-        jwt.sign({ _id: user._id }, config.secret, function (err, token) {
+        const data = {}
+        jwt.sign({ _id: user._id }, config.secret, { expiresIn: 300 }, function (err, token) {
           if (!err) {
-            res.status(200).json({ token })
+            data.auth_token = token
+            jwt.sign({ _id: user._id }, config.secret, function (err, token) {
+              if (!err) {
+                tokenSet.add(token)
+                data.refresh_token = token
+                res.status(200).json(data)
+              } else {
+                res.sendStatus(401)
+              }
+            })
           } else {
             res.sendStatus(401)
           }
@@ -45,9 +57,33 @@ app.post('/auth', (req, res) => {
 app.get('/profile', (req, res) => {
   const token = req.get('Authorization')
   if (token) {
-    jwt.verify(token, config.secret, {}, function (error, decoded) {
+    jwt.verify(token, config.secret, function (error, decoded) {
       if (error) {
-        res.sendStatus(401)
+        const refreshToken = req.get('Refresh')
+        if (refreshToken) {
+          if (tokenSet.has(refreshToken)) {
+            jwt.verify(refreshToken, config.secret, function (error, decoded) {
+              if (error) {
+                tokenSet.delete(refreshToken)
+                res.sendStatus(401)
+              } else {
+                jwt.sign({ _id: decoded._id }, config.secret, { expiresIn: 300 }, function (error, token) {
+                  if (error) {
+                    res.sendStatus(401)
+                  } else {
+                    User.findOne({ _id: decoded._id })
+                      .then((user) => {
+                        user.token = token
+                        res.status(200).json(user)
+                      })
+                  }
+                })
+              }
+            })
+          }
+        } else {
+          res.sendStatus(401)
+        }
       } else {
         User.findOne({ _id: decoded._id })
           .then((user) => {
